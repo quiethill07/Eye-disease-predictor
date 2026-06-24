@@ -1,25 +1,15 @@
 # Seg_UKAN_V3
 
-`Seg_UKAN_V3` is a hybrid retinal image analysis project built by combining:
+This is a retinal image analysis system that does two connected jobs:
 
-- the stronger segmentation direction from `Seg_UKAN` (V1)
-- the cleaner classification and fusion pipeline from `Seg_UKAN_V2` (V2)
+- segment blood vessels from fundus images
+- classify eye disease using both the original retinal image and vessel-aware information
 
 The current best variant uses `cbam_se` attention in the segmentation branch.
 
-## Current Best Results
-
-### Segmentation
-- Test IoU: `0.3133`
-- Test Dice: `0.4714`
-
-### Classification
-- Test Accuracy: `0.5600`
-- Test Macro F1: `0.5588`
-
 ## Project Idea
 
-This version keeps the newer V2 training and testing pipeline while replacing the segmentation backbone with the stronger V1-style UKAN/KAN-based segmentation model. It is intended as the main working version for future improvements.
+The core idea is that vessel structure carries clinically useful signals, so instead of treating classification as a plain image problem, we first learn a vessel-focused representation and then use that to improve disease prediction. The project is essentially a hybrid multi-stage retinal diagnosis pipeline where segmentation supports classification, and attention-enhanced feature learning helps the model focus on medically relevant patterns.
 
 ## Main Files
 
@@ -72,9 +62,3 @@ python train_classification.py --fives_root "C:\path\to\FIVES\FIVES A Fundus Ima
 ```powershell
 python test_classification.py --fives_root "C:\path\to\FIVES\FIVES A Fundus Image Dataset for AI-based Vessel Segmentation" --checkpoint "C:\path\to\v3_cls_run\checkpoints\best_classification_model.pth" --output_dir "C:\path\to\v3_cls_test" --use_ground_truth_masks --image_size 128 --batch_size 4 --num_workers 0 --val_size 0.2 --seed 42
 ```
-
-## Notes
-
-- Do not upload the dataset to GitHub.
-- Do not upload training outputs, checkpoints, or test result folders unless you specifically want to publish them.
-- Keep `Seg_UKAN_V3` as the main version for future work.
