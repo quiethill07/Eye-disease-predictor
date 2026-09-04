@@ -88,6 +88,106 @@ def decode_uploaded_image(uploaded_file) -> np.ndarray:
     return image
 
 
+def analyze_fundus_characteristics(image_bgr: np.ndarray) -> Dict[str, float]:
+    height, width = image_bgr.shape[:2]
+    scale = min(1.0, 512.0 / max(height, width))
+    if scale < 1.0:
+        image_bgr = cv2.resize(image_bgr, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
+
+    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+
+    rgb_float = image_rgb.astype(np.float32)
+    red = rgb_float[:, :, 0]
+    green = rgb_float[:, :, 1]
+    blue = rgb_float[:, :, 2]
+
+    warm_mask = (red > green + 5) & (green > blue - 10) & (hsv[:, :, 1] > 35) & (hsv[:, :, 2] > 35)
+    warm_ratio = float(np.mean(warm_mask))
+    red_green_ratio = float((red.mean() + 1.0) / (green.mean() + 1.0))
+    mean_saturation = float(hsv[:, :, 1].mean())
+
+    border_size = max(8, min(image_bgr.shape[0], image_bgr.shape[1]) // 12)
+    border_mask = np.zeros(gray.shape, dtype=bool)
+    border_mask[:border_size, :] = True
+    border_mask[-border_size:, :] = True
+    border_mask[:, :border_size] = True
+    border_mask[:, -border_size:] = True
+    dark_border_ratio = float(np.mean(gray[border_mask] < 35))
+
+    _, foreground = cv2.threshold(gray, 12, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(foreground, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    largest_area_ratio = 0.0
+    circularity = 0.0
+    if contours:
+        largest = max(contours, key=cv2.contourArea)
+        area = float(cv2.contourArea(largest))
+        largest_area_ratio = area / float(gray.shape[0] * gray.shape[1])
+        perimeter = float(cv2.arcLength(largest, True))
+        if perimeter > 0:
+            circularity = float(4.0 * np.pi * area / (perimeter * perimeter))
+
+    return {
+        "warm_ratio": warm_ratio,
+        "red_green_ratio": red_green_ratio,
+        "mean_saturation": mean_saturation,
+        "dark_border_ratio": dark_border_ratio,
+        "largest_area_ratio": largest_area_ratio,
+        "circularity": circularity,
+    }
+
+
+def validate_fundus_candidate(image_bgr: np.ndarray) -> Tuple[bool, List[str], Dict[str, float]]:
+    stats = analyze_fundus_characteristics(image_bgr)
+    score = 0
+    reasons: List[str] = []
+
+    if stats["warm_ratio"] >= 0.18:
+        score += 1
+    else:
+        reasons.append("The image does not have the usual warm retinal color distribution.")
+
+    if stats["red_green_ratio"] >= 1.05:
+        score += 1
+    else:
+        reasons.append("Red tones are not dominant enough for a typical fundus photo.")
+
+    if stats["mean_saturation"] >= 45:
+        score += 1
+    else:
+        reasons.append("The image saturation looks unusual for a retinal photograph.")
+
+    if stats["dark_border_ratio"] >= 0.12:
+        score += 1
+
+    if stats["largest_area_ratio"] >= 0.35 and stats["circularity"] >= 0.40:
+        score += 1
+
+    looks_like_fundus = score >= 3 and (stats["warm_ratio"] >= 0.18 or stats["dark_border_ratio"] >= 0.20)
+    return looks_like_fundus, reasons, stats
+
+
+def validate_segmentation_output(prob_map: np.ndarray, binary_mask: np.ndarray) -> Tuple[bool, str, Dict[str, float]]:
+    vessel_ratio = float(binary_mask.mean())
+    high_conf_ratio = float(np.mean(prob_map >= 0.65))
+    mean_probability = float(prob_map.mean())
+
+    is_plausible = vessel_ratio >= 0.008 and high_conf_ratio >= 0.002 and mean_probability >= 0.015
+    message = ""
+    if not is_plausible:
+        message = (
+            "The uploaded image did not produce a vessel pattern that looks like a valid fundus scan. "
+            "Please upload a clear retinal fundus image."
+        )
+
+    return is_plausible, message, {
+        "vessel_ratio": vessel_ratio,
+        "high_conf_ratio": high_conf_ratio,
+        "mean_probability": mean_probability,
+    }
+
+
 def build_segmentation_model(config: dict, checkpoint_path: Path):
     model = archs.__dict__[config["arch"]](
         config["num_classes"],
@@ -423,6 +523,7 @@ def main():
         """,
         unsafe_allow_html=True,
     )
+    st.caption("Accepted input: retinal fundus photographs only. Non-fundus images are screened and may be rejected.")
 
     try:
         pipeline = load_pipeline()
@@ -436,12 +537,27 @@ def main():
         return
 
     image_bgr = decode_uploaded_image(image_file)
+    is_fundus_candidate, rejection_reasons, fundus_stats = validate_fundus_candidate(image_bgr)
+    if not is_fundus_candidate:
+        st.error("This upload does not appear to be a retinal fundus image, so prediction was stopped.")
+        if rejection_reasons:
+            st.caption("Why it was rejected: " + " ".join(rejection_reasons[:2]))
+        with st.expander("Input validation details"):
+            st.json({key: round(value, 4) for key, value in fundus_stats.items()})
+        return
+
     with st.spinner("Running segmentation and classification..."):
         seg_prob_map, seg_binary_mask = run_segmentation(
             pipeline["seg_model"],
             pipeline["seg_config"],
             image_bgr,
         )
+        seg_ok, seg_message, seg_stats = validate_segmentation_output(seg_prob_map, seg_binary_mask)
+        if not seg_ok:
+            st.error(seg_message)
+            with st.expander("Segmentation validation details"):
+                st.json({key: round(value, 4) for key, value in seg_stats.items()})
+            return
         class_probs = run_classification(
             pipeline["cls_model"],
             pipeline["cls_config"],
