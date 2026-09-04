@@ -20,11 +20,11 @@ This repository implements **U-KAN**, a U-Net-style architecture with Kolmogorov
 - `train_classifier.py` — Train the segmentation-guided classifier.
 - `val_classifier.py` — Evaluate the classifier on val/test splits.
 - `scripts.sh` — Example end-to-end command sequence for the full pipeline.
-- `environment.yml` / `requirements.txt` — Dependency specifications.
+- `environment.training.yml` / `requirements.txt` — Dependency specifications.
 
 ## Installation
 
-Python 3.8+ is recommended (the original `environment.yml` targets Python 3.6, but `requirements.txt` is compatible with newer versions).
+Python 3.8+ is recommended (the original `environment.training.yml` targets Python 3.6 for legacy training, but `requirements.txt` is compatible with newer versions and is used for Streamlit deployment).
 
 ```bash
 pip install -r requirements.txt
