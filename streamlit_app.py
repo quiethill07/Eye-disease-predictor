@@ -188,6 +188,15 @@ def validate_segmentation_output(prob_map: np.ndarray, binary_mask: np.ndarray) 
     }
 
 
+def prepare_preview_image(image: np.ndarray, max_width: int = 360) -> np.ndarray:
+    height, width = image.shape[:2]
+    if width <= max_width:
+        return image
+    scale = max_width / float(width)
+    new_size = (max_width, max(1, int(height * scale)))
+    return cv2.resize(image, new_size, interpolation=cv2.INTER_AREA)
+
+
 def build_segmentation_model(config: dict, checkpoint_path: Path):
     model = archs.__dict__[config["arch"]](
         config["num_classes"],
@@ -595,10 +604,14 @@ def main():
         stat2.metric("Runner-up", runner_up)
         stat3.metric("Runner-up score", f"{runner_up_conf:.2%}")
 
-    col1, col2, col3 = st.columns(3)
-    col1.image(image_rgb, caption="Original fundus image", use_container_width=True)
-    col2.image(prob_uint8, caption="Segmentation probability map", use_container_width=True, clamp=True)
-    col3.image(binary_uint8, caption="Binary vessel mask", use_container_width=True, clamp=True)
+    preview_rgb = prepare_preview_image(image_rgb)
+    preview_prob = prepare_preview_image(prob_uint8)
+    preview_mask = prepare_preview_image(binary_uint8)
+
+    col1, col2, col3 = st.columns([0.92, 0.92, 0.92])
+    col1.image(preview_rgb, caption="Original fundus image", clamp=True)
+    col2.image(preview_prob, caption="Segmentation probability map", clamp=True)
+    col3.image(preview_mask, caption="Binary vessel mask", clamp=True)
 
     results_table: List[Dict[str, str]] = []
     for index, probability in enumerate(class_probs):

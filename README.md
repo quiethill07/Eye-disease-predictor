@@ -102,6 +102,16 @@ to verify the dataset and environment before running the full pipeline.
 
 ## Streamlit App
 
+Sample interface and prediction flow:
+
+![App overview](docs/app_overview.png)
+
+The app accepts a retinal fundus image, runs segmentation first, and then performs disease classification using the predicted vessel map.
+
+![Prediction summary](docs/app_checkimg1.png)
+
+![Segmentation and class probabilities](docs/app_checkimg2.png)
+
 Run locally:
 
 ```bash
