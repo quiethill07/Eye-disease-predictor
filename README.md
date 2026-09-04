@@ -154,6 +154,22 @@ classification_model_url = "https://example.com/best_classifier.pth"
 
 The app will download missing artifacts into `app_artifacts/` at startup.
 
+For a public Streamlit app with private model files, store the artifacts in a private GitHub repository and add this to Streamlit secrets instead:
+
+```toml
+[github_artifacts]
+owner = "your-github-username"
+repo = "your-private-artifact-repo"
+branch = "main"
+token = "github_fine_grained_token_with_contents_read"
+segmentation_config_path = "segmentation/config.yml"
+segmentation_model_path = "segmentation/model.pth"
+classification_config_path = "classification/classifier_config.yml"
+classification_model_path = "classification/best_classifier.pth"
+```
+
+The app will use the GitHub Contents API with authenticated raw downloads for those files.
+
 ## License
 
 No standalone license file is currently included with this project.

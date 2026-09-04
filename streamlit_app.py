@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Dict, List, Tuple
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import albumentations as A
 import cv2
@@ -139,6 +139,65 @@ def get_artifact_urls() -> Dict[str, str]:
     return urls
 
 
+def get_private_github_config() -> Dict[str, str]:
+    config: Dict[str, str] = {}
+    if hasattr(st, "secrets") and "github_artifacts" in st.secrets:
+        secret_cfg = st.secrets["github_artifacts"]
+        for key in [
+            "owner",
+            "repo",
+            "token",
+            "segmentation_config_path",
+            "segmentation_model_path",
+            "classification_config_path",
+            "classification_model_path",
+            "branch",
+        ]:
+            value = secret_cfg.get(key, "")
+            if value:
+                config[key] = str(value)
+    return config
+
+
+def download_url_to_path(source_url: str, dest_path: Path, headers: Dict[str, str] | None = None) -> None:
+    request = Request(source_url, headers=headers or {})
+    with urlopen(request) as response:
+        data = response.read()
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_bytes(data)
+
+
+def maybe_download_from_private_github(dest_path: Path) -> bool:
+    cfg = get_private_github_config()
+    if not cfg:
+        return False
+
+    repo_path_map = {
+        SEG_CONFIG_PATH: cfg.get("segmentation_config_path", ""),
+        SEG_MODEL_PATH: cfg.get("segmentation_model_path", ""),
+        CLS_CONFIG_PATH: cfg.get("classification_config_path", ""),
+        CLS_MODEL_PATH: cfg.get("classification_model_path", ""),
+    }
+    repo_path = repo_path_map.get(dest_path, "")
+    owner = cfg.get("owner", "")
+    repo = cfg.get("repo", "")
+    token = cfg.get("token", "")
+    branch = cfg.get("branch", "")
+    if not (repo_path and owner and repo and token):
+        return False
+
+    ref_query = f"?ref={branch}" if branch else ""
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{repo_path}{ref_query}"
+    headers = {
+        "Accept": "application/vnd.github.raw+json",
+        "Authorization": f"Bearer {token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "streamlit-eye-disease-predictor",
+    }
+    download_url_to_path(api_url, dest_path, headers=headers)
+    return True
+
+
 def ensure_remote_artifacts() -> List[str]:
     missing_local = [path for path in ARTIFACT_FILES.values() if not path.is_file()]
     if not missing_local:
@@ -149,14 +208,13 @@ def ensure_remote_artifacts() -> List[str]:
     for key, dest_path in ARTIFACT_FILES.items():
         if dest_path.is_file():
             continue
+        if maybe_download_from_private_github(dest_path):
+            continue
         source_url = urls.get(key, "").strip()
         if not source_url:
             still_missing.append(str(dest_path))
             continue
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        with urlopen(source_url) as response:
-            data = response.read()
-        dest_path.write_bytes(data)
+        download_url_to_path(source_url, dest_path)
 
     return [str(path) for path in ARTIFACT_FILES.values() if not path.is_file()]
 
@@ -427,6 +485,7 @@ def main():
                 "classification_checkpoint": str(CLS_MODEL_PATH),
                 "classes": pipeline["class_names"],
                 "remote_urls_configured": sorted(list(get_artifact_urls().keys())),
+                "private_github_enabled": bool(get_private_github_config()),
             }
         )
 
