@@ -1,64 +1,107 @@
-# Seg_UKAN_V3
+# Seg-UKAN: Retinal Vessel Segmentation with U-KAN + Segmentation-Guided Classification
 
-This is a retinal image analysis system that does two connected jobs:
+This repository implements **U-KAN**, a U-Net-style architecture with Kolmogorov–Arnold Network (KAN) layers in the bottleneck, for retinal vessel segmentation on the **FIVES** fundus image dataset. It also includes an optional downstream pipeline that trains an EfficientNet-B0 classifier guided by the predicted segmentation masks.
 
-- segment blood vessels from fundus images
-- classify eye disease using both the original retinal image and vessel-aware information
+## Contents
 
-The current best variant uses `cbam_se` attention in the segmentation branch.
+- `archs.py` — U-KAN model definition (KAN-based bottleneck blocks, optional SE/CBAM attention, encoder/decoder).
+- `kan.py` — KAN linear layer implementation used by the bottleneck.
+- `dataset.py` — `Dataset` (train/val, image + mask pairs) and `InferenceDataset` (image-only inference) classes.
+- `losses.py` — Loss functions (e.g. `BCEDiceLoss`).
+- `metrics.py` — Segmentation metrics: IoU, Dice, Hausdorff distance/HD95, recall, specificity, precision.
+- `utils.py` — Small shared helpers (`AverageMeter`, `str2bool`).
+- `train.py` — Train the U-KAN segmentation model.
+- `val.py` — Evaluate a trained segmentation model on the val or test split.
+- `infer.py` — Run inference with a trained segmentation model on an arbitrary image folder, saving binary masks and/or probability maps.
+- `pipeline_preflight.py` — Sanity-checks the dataset layout, required Python packages, and CSV schemas before running the full pipeline.
+- `generate_classifier_masks.py` — Generates split-safe segmentation masks (for train and test images) to be used as guidance input for the downstream classifier.
+- `classifier_model.py` — Segmentation-guided EfficientNet-B0 classifier architectures (single-input mask-attention and dual-input fusion variants).
+- `classifier_dataset.py` — Dataset class for the segmentation-guided classifier.
+- `train_classifier.py` — Train the segmentation-guided classifier.
+- `val_classifier.py` — Evaluate the classifier on val/test splits.
+- `scripts.sh` — Example end-to-end command sequence for the full pipeline.
+- `environment.yml` / `requirements.txt` — Dependency specifications.
 
-## Project Idea
+## Installation
 
-The core idea is that vessel structure carries clinically useful signals, so instead of treating classification as a plain image problem, we first learn a vessel-focused representation and then use that to improve disease prediction. The project is essentially a hybrid multi-stage retinal diagnosis pipeline where segmentation supports classification, and attention-enhanced feature learning helps the model focus on medically relevant patterns.
+Python 3.8+ is recommended (the original `environment.yml` targets Python 3.6, but `requirements.txt` is compatible with newer versions).
 
-## Main Files
+```bash
+pip install -r requirements.txt
 
-- `train_segmentation.py`: train vessel segmentation
-- `test_segmentation.py`: evaluate segmentation
-- `train_classification.py`: train disease classification
-- `test_classification.py`: evaluate classification
-- `model_segmentation.py`: V3 compatibility wrapper around the V1 segmentation model
-- `fusion_model.py`: V2-style classification fusion model
-- `archs.py`: V1 segmentation architecture
-- `kan.py`: KAN implementation used by the V1 segmentation branch
-
-## Dataset Layout
-
-Expected dataset layout:
-
-```text
-FIVES/
-  FIVES A Fundus Image Dataset for AI-based Vessel Segmentation/
-    train/
-      Original/
-      Ground truth/
-    test/
-      Original/
-      Ground truth/
+# Install PyTorch separately according to your CUDA/CPU setup, e.g.:
+pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu116
 ```
 
-## Example Commands
+## Dataset
 
-### Segmentation training
+The scripts are written around the [FIVES](https://doi.org/10.6084/m9.figshare.19688169) fundus vessel segmentation dataset, expected in this layout:
 
-```powershell
-python train_segmentation.py --fives_root "C:\path\to\FIVES\FIVES A Fundus Image Dataset for AI-based Vessel Segmentation" --output_dir "C:\path\to\v3_seg_run" --epochs 20 --batch_size 2 --image_size 128 --num_workers 0 --val_size 0.2 --seed 42 --disable_amp --attention_mode cbam_se
+```
+<FIVES_ROOT>/
+├── train/
+│   ├── Original/        # training images (.png)
+│   └── Ground truth/    # training masks (.png)
+└── test/
+    ├── Original/        # test images (.png)
+    └── Ground truth/    # test masks (.png)
 ```
 
-### Segmentation test
+A generic `<dataset>/images` + `<dataset>/masks/<class_idx>` layout is also supported for datasets other than FIVES (see `dataset.py` for details).
 
-```powershell
-python test_segmentation.py --fives_root "C:\path\to\FIVES\FIVES A Fundus Image Dataset for AI-based Vessel Segmentation" --checkpoint "C:\path\to\v3_seg_run\checkpoints\best_segmentation_model.pth" --output_dir "C:\path\to\v3_seg_test" --image_size 128 --batch_size 2 --num_workers 0 --val_size 0.2 --seed 42
+## Usage
+
+### 1. Train the segmentation model
+
+```bash
+python train.py --arch UKAN --dataset fives --input_w 256 --input_h 256 \
+    --name fives_UKAN --data_dir [FIVES_ROOT] --val_ratio 0.2
 ```
 
-### Classification training
+### 2. Evaluate the segmentation model
 
-```powershell
-python train_classification.py --fives_root "C:\path\to\FIVES\FIVES A Fundus Image Dataset for AI-based Vessel Segmentation" --output_dir "C:\path\to\v3_cls_run" --use_ground_truth_masks --epochs 20 --batch_size 4 --image_size 128 --num_workers 0 --val_size 0.2 --seed 42 --backbone_name efficientnet_b0 --no_pretrained --disable_amp --segmentation_attention_mode cbam_se
+```bash
+python val.py --name fives_UKAN --split val --val_ratio 0.2
+python val.py --name fives_UKAN --split test
 ```
 
-### Classification test
+### 3. Run inference on new images
 
-```powershell
-python test_classification.py --fives_root "C:\path\to\FIVES\FIVES A Fundus Image Dataset for AI-based Vessel Segmentation" --checkpoint "C:\path\to\v3_cls_run\checkpoints\best_classification_model.pth" --output_dir "C:\path\to\v3_cls_test" --use_ground_truth_masks --image_size 128 --batch_size 4 --num_workers 0 --val_size 0.2 --seed 42
+```bash
+python infer.py --name fives_UKAN --image_dir /path/to/images --save_dir vessel_predictions
 ```
+
+### 4. (Optional) Segmentation-guided classification
+
+After the segmentation model is trained:
+
+```bash
+# Ensure train/test label CSVs (img_id,label) exist in your dataset package.
+
+# Generate split-safe segmentation masks for the classifier (soft probability maps by default).
+python generate_classifier_masks.py --name fives_UKAN --output_dir outputs \
+    --data_dir [FIVES_ROOT] --save_root classifier_masks --mask_type prob
+
+# Train the classifier (train/val only).
+python train_classifier.py --name fives_effb0_seg_guided --data_dir [FIVES_ROOT] \
+    --train_labels_csv [TRAIN_CSV] --train_mask_dir classifier_masks/fives_UKAN/train/prob_maps
+
+# Evaluate the classifier on val/test.
+python val_classifier.py --name fives_effb0_seg_guided --split val
+python val_classifier.py --name fives_effb0_seg_guided --split test \
+    --test_labels_csv [TEST_CSV] --test_mask_dir classifier_masks/fives_UKAN/test/prob_maps
+```
+
+See `scripts.sh` for the full example sequence, and `pipeline_preflight.py` to validate your dataset/environment before running the pipeline end to end:
+
+```bash
+python pipeline_preflight.py --fives_root [FIVES_ROOT]
+```
+
+## Outputs
+
+Training runs are saved under `outputs/<name>/` (segmentation) and `outputs_cls/<name>/` (classifier), each containing the run config (`config.yml`), logs (`log.csv`), TensorBoard event files, and model checkpoints (best/last/periodic).
+
+## License
+
+This project is released under the MIT License — see [LICENSE](LICENSE).

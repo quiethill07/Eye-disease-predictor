@@ -1,278 +1,148 @@
 import os
-from dataclasses import dataclass
-from glob import glob
-from typing import Dict, Optional, Tuple
 
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 import cv2
 import numpy as np
-import pandas as pd
-from sklearn.model_selection import train_test_split
 import torch
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+import torch.utils.data
 
 
-LABEL_MAP = {"amd": 0, "dr": 1, "glaucoma": 2, "normal": 3}
-INV_LABEL_MAP = {value: key for key, value in LABEL_MAP.items()}
-FIVES_SUFFIX_MAP = {"a": "amd", "d": "dr", "g": "glaucoma", "n": "normal"}
-VALID_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+def to_unit_float(arr):
+    orig_dtype = arr.dtype
+    arr = arr.astype('float32')
+    # Only scale raw image tensors; do not rescale already-normalized floats.
+    if orig_dtype == np.uint8:
+        arr = arr / 255.0
+    return arr
 
 
-def _normalize_label(label: str) -> int:
-    key = str(label).strip().lower()
-    if key not in LABEL_MAP:
-        raise ValueError(f"Unknown label '{label}'. Expected one of {list(LABEL_MAP.keys())}.")
-    return LABEL_MAP[key]
+def discover_image_ids(img_dir, exts):
+    img_ids = []
+    for entry in sorted(os.listdir(img_dir)):
+        lower_entry = entry.lower()
+        for ext in exts:
+            if lower_entry.endswith(ext.lower()):
+                img_ids.append(os.path.splitext(entry)[0])
+                break
+    return img_ids
 
 
-def build_transforms(image_size: int = 512, train: bool = True) -> A.Compose:
-    if train:
-        return A.Compose(
-            [
-                A.Resize(image_size, image_size),
-                A.HorizontalFlip(p=0.5),
-                A.Rotate(limit=20, border_mode=cv2.BORDER_CONSTANT, p=0.5),
-                A.RandomBrightnessContrast(p=0.4),
-                A.CLAHE(clip_limit=2.0, p=0.2),
-                A.Affine(
-                    translate_percent=(-0.03, 0.03),
-                    scale=(0.95, 1.05),
-                    rotate=(-8, 8),
-                    border_mode=cv2.BORDER_CONSTANT,
-                    p=0.3,
-                ),
-                A.GaussianBlur(blur_limit=(3, 5), p=0.1),
-                A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-                ToTensorV2(),
-            ]
-        )
-    return A.Compose(
-        [
-            A.Resize(image_size, image_size),
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            ToTensorV2(),
-        ]
-    )
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self, img_ids, img_dir, mask_dir, img_ext, mask_ext, num_classes, transform=None, mask_in_class_subdir=True, id_prefix=''):
+        """
+        Args:
+            img_ids (list): Image ids.
+            img_dir: Image file directory.
+            mask_dir: Mask file directory.
+            img_ext (str): Image file extension.
+            mask_ext (str): Mask file extension.
+            num_classes (int): Number of classes.
+            transform (Compose, optional): Compose transforms of albumentations. Defaults to None.
+        
+        Note:
+            Make sure to put the files as the following structure:
+            <dataset name>
+            ├── images
+            |   ├── 0a7e06.jpg
+            │   ├── 0aab0a.jpg
+            │   ├── 0b1761.jpg
+            │   ├── ...
+            |
+            └── masks
+                ├── 0
+                |   ├── 0a7e06.png
+                |   ├── 0aab0a.png
+                |   ├── 0b1761.png
+                |   ├── ...
+                |
+                ├── 1
+                |   ├── 0a7e06.png
+                |   ├── 0aab0a.png
+                |   ├── 0b1761.png
+                |   ├── ...
+                ...
+        """
+        self.img_ids = img_ids
+        self.img_dir = img_dir
+        self.mask_dir = mask_dir
+        self.img_ext = img_ext
+        self.mask_ext = mask_ext
+        self.num_classes = num_classes
+        self.transform = transform
+        self.mask_in_class_subdir = mask_in_class_subdir
+        self.id_prefix = id_prefix
+
+    def __len__(self):
+        return len(self.img_ids)
+
+    def __getitem__(self, idx):
+        img_id = self.img_ids[idx]
+        
+        img_path = os.path.join(self.img_dir, img_id + self.img_ext)
+        img = cv2.imread(img_path)
+        # cv2.imread returns None for a missing/corrupt file; without this check
+        # the failure surfaces much later as an opaque NoneType error.
+        if img is None:
+            raise FileNotFoundError(f'Failed to read image: {img_path}')
+
+        mask = []
+        for i in range(self.num_classes):
+            if self.mask_in_class_subdir:
+                mask_path = os.path.join(self.mask_dir, str(i), img_id + self.mask_ext)
+            else:
+                mask_path = os.path.join(self.mask_dir, img_id + self.mask_ext)
+            mask_i = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            if mask_i is None:
+                raise FileNotFoundError(f'Failed to read mask: {mask_path}')
+            mask.append(mask_i[..., None])
+        mask = np.dstack(mask)
+
+        if self.transform is not None:
+            augmented = self.transform(image=img, mask=mask)
+            img = augmented['image']
+            mask = augmented['mask']
+        
+        img = to_unit_float(img)
+        img = img.transpose(2, 0, 1)
+        mask = to_unit_float(mask)
+        mask = mask.transpose(2, 0, 1)
+
+        if mask.max()<1:
+            mask[mask>0] = 1.0
+
+        sample_id = f'{self.id_prefix}_{img_id}' if self.id_prefix else img_id
+        return img, mask, {'img_id': img_id, 'sample_id': sample_id}
 
 
-@dataclass
-class DatasetConfig:
-    csv_path: str = ""
-    image_root: str = ""
-    mask_root: str = ""
-    fives_root: str = ""
-    image_size: int = 512
-    batch_size: int = 4
-    num_workers: int = 2
-    pin_memory: bool = True
-    val_size: float = 0.2
-    seed: int = 42
-    weighted_sampling: bool = False
+class InferenceDataset(torch.utils.data.Dataset):
+    def __init__(self, img_ids, img_dir, img_ext, transform=None, id_to_ext=None, id_prefix='', id_to_path=None):
+        self.img_ids = img_ids
+        self.img_dir = img_dir
+        self.img_ext = img_ext
+        self.transform = transform
+        self.id_to_ext = id_to_ext if id_to_ext is not None else {}
+        self.id_prefix = id_prefix
+        self.id_to_path = id_to_path if id_to_path is not None else {}
 
+    def __len__(self):
+        return len(self.img_ids)
 
-class RetinalMultiTaskDataset(Dataset):
-    """
-    Expected CSV columns:
-    image_path, mask_path, label, split
-    """
-
-    def __init__(
-        self,
-        dataframe: pd.DataFrame,
-        image_root: str = "",
-        mask_root: str = "",
-        transforms: Optional[A.Compose] = None,
-    ) -> None:
-        self.dataframe = dataframe.reset_index(drop=True).copy()
-        self.image_root = image_root
-        self.mask_root = mask_root
-        self.transforms = transforms
-
-        required_cols = {"image_path", "mask_path", "label"}
-        missing = required_cols - set(self.dataframe.columns)
-        if missing:
-            raise ValueError(f"Missing required columns in CSV: {missing}")
-
-        self.dataframe["label_idx"] = self.dataframe["label"].map(_normalize_label)
-
-    def __len__(self) -> int:
-        return len(self.dataframe)
-
-    def _resolve_path(self, path: str, root: str) -> str:
-        if os.path.isabs(path):
-            return path
-        return os.path.join(root, path)
-
-    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-        row = self.dataframe.iloc[index]
-        image_path = self._resolve_path(row["image_path"], self.image_root)
-        mask_path = self._resolve_path(row["mask_path"], self.mask_root)
-
-        image = cv2.imread(image_path, cv2.IMREAD_COLOR)
-        if image is None:
-            raise FileNotFoundError(f"Could not read image: {image_path}")
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-        if mask is None:
-            raise FileNotFoundError(f"Could not read mask: {mask_path}")
-        mask = (mask > 127).astype(np.float32)
-
-        if self.transforms is not None:
-            transformed = self.transforms(image=image, mask=mask)
-            image = transformed["image"]
-            mask = transformed["mask"].float().unsqueeze(0)
+    def __getitem__(self, idx):
+        img_id = self.img_ids[idx]
+        if img_id in self.id_to_path:
+            img_path = self.id_to_path[img_id]
         else:
-            image = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
-            mask = torch.from_numpy(mask).float().unsqueeze(0)
+            img_ext = self.id_to_ext.get(img_id, self.img_ext)
+            img_path = os.path.join(self.img_dir, img_id + img_ext)
+        img = cv2.imread(img_path)
+        if img is None:
+            raise FileNotFoundError(f'Failed to read image: {img_path}')
 
-        return {
-            "image": image,
-            "mask": mask,
-            "label": torch.tensor(int(row["label_idx"]), dtype=torch.long),
-            "image_path": image_path,
-            "mask_path": mask_path,
-        }
+        if self.transform is not None:
+            augmented = self.transform(image=img)
+            img = augmented['image']
 
+        img = to_unit_float(img)
+        img = img.transpose(2, 0, 1)
 
-def load_splits(csv_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    dataframe = pd.read_csv(csv_path)
-    if "split" not in dataframe.columns:
-        raise ValueError("CSV must contain a 'split' column with train/val/test values.")
-
-    train_df = dataframe[dataframe["split"].str.lower() == "train"].reset_index(drop=True)
-    val_df = dataframe[dataframe["split"].str.lower() == "val"].reset_index(drop=True)
-    test_df = dataframe[dataframe["split"].str.lower() == "test"].reset_index(drop=True)
-    return train_df, val_df, test_df
-
-
-def infer_label_from_filename(file_path: str) -> str:
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    suffix = stem.split("_")[-1].strip().lower()
-    if suffix not in FIVES_SUFFIX_MAP:
-        raise ValueError(
-            f"Could not infer label from filename '{file_path}'. "
-            "Expected a FIVES-style suffix such as _A, _D, _G, or _N."
-        )
-    return FIVES_SUFFIX_MAP[suffix]
-
-
-def build_fives_dataframe(fives_root: str, val_size: float = 0.2, seed: int = 42) -> pd.DataFrame:
-    records = []
-    for split_name in ["train", "test"]:
-        image_dir = os.path.join(fives_root, split_name, "Original")
-        mask_dir = os.path.join(fives_root, split_name, "Ground truth")
-        if not os.path.isdir(mask_dir):
-            mask_dir = os.path.join(fives_root, split_name, "Ground Truth")
-
-        image_paths = sorted(glob(os.path.join(image_dir, "*")))
-        if not image_paths:
-            raise FileNotFoundError(f"No images found in {image_dir}")
-
-        for image_path in image_paths:
-            extension = os.path.splitext(image_path)[1].lower()
-            if extension not in VALID_IMAGE_EXTENSIONS:
-                continue
-            file_name = os.path.basename(image_path)
-            mask_path = os.path.join(mask_dir, file_name)
-            if not os.path.exists(mask_path):
-                raise FileNotFoundError(f"Missing mask for {image_path}. Expected {mask_path}")
-
-            records.append(
-                {
-                    "image_path": image_path,
-                    "mask_path": mask_path,
-                    "label": infer_label_from_filename(file_name),
-                    "source_split": split_name,
-                }
-            )
-
-    dataframe = pd.DataFrame(records)
-    train_source = dataframe[dataframe["source_split"] == "train"].reset_index(drop=True)
-    test_df = dataframe[dataframe["source_split"] == "test"].copy()
-    test_df["split"] = "test"
-
-    train_idx, val_idx = train_test_split(
-        train_source.index,
-        test_size=val_size,
-        stratify=train_source["label"],
-        random_state=seed,
-    )
-    train_df = train_source.loc[train_idx].copy()
-    val_df = train_source.loc[val_idx].copy()
-    train_df["split"] = "train"
-    val_df["split"] = "val"
-
-    combined = pd.concat([train_df, val_df, test_df], axis=0, ignore_index=True)
-    return combined[["image_path", "mask_path", "label", "split"]]
-
-
-def create_dataloaders(config: DatasetConfig) -> Dict[str, DataLoader]:
-    if config.csv_path:
-        train_df, val_df, test_df = load_splits(config.csv_path)
-    elif config.fives_root:
-        dataframe = build_fives_dataframe(config.fives_root, val_size=config.val_size, seed=config.seed)
-        train_df = dataframe[dataframe["split"] == "train"].reset_index(drop=True)
-        val_df = dataframe[dataframe["split"] == "val"].reset_index(drop=True)
-        test_df = dataframe[dataframe["split"] == "test"].reset_index(drop=True)
-    else:
-        raise ValueError("Provide either csv_path or fives_root in DatasetConfig.")
-
-    train_dataset = RetinalMultiTaskDataset(
-        dataframe=train_df,
-        image_root=config.image_root,
-        mask_root=config.mask_root,
-        transforms=build_transforms(config.image_size, train=True),
-    )
-    val_dataset = RetinalMultiTaskDataset(
-        dataframe=val_df,
-        image_root=config.image_root,
-        mask_root=config.mask_root,
-        transforms=build_transforms(config.image_size, train=False),
-    )
-    test_dataset = RetinalMultiTaskDataset(
-        dataframe=test_df,
-        image_root=config.image_root,
-        mask_root=config.mask_root,
-        transforms=build_transforms(config.image_size, train=False),
-    )
-
-    train_loader_kwargs = {
-        "batch_size": config.batch_size,
-        "drop_last": True,
-        "num_workers": config.num_workers,
-        "pin_memory": config.pin_memory,
-    }
-    if config.weighted_sampling:
-        label_counts = train_df["label"].str.lower().value_counts().to_dict()
-        sample_weights = train_df["label"].str.lower().map(lambda label: 1.0 / max(label_counts[label], 1)).to_numpy()
-        train_loader_kwargs["sampler"] = WeightedRandomSampler(
-            weights=torch.tensor(sample_weights, dtype=torch.double),
-            num_samples=len(sample_weights),
-            replacement=True,
-        )
-        train_loader_kwargs["shuffle"] = False
-    else:
-        train_loader_kwargs["shuffle"] = True
-
-    return {
-        "train": DataLoader(
-            train_dataset,
-            **train_loader_kwargs,
-        ),
-        "val": DataLoader(
-            val_dataset,
-            batch_size=config.batch_size,
-            shuffle=False,
-            num_workers=config.num_workers,
-            pin_memory=config.pin_memory,
-        ),
-        "test": DataLoader(
-            test_dataset,
-            batch_size=config.batch_size,
-            shuffle=False,
-            num_workers=config.num_workers,
-            pin_memory=config.pin_memory,
-        ),
-    }
+        sample_id = f'{self.id_prefix}_{img_id}' if self.id_prefix else img_id
+        return img, {'img_id': img_id, 'sample_id': sample_id, 'img_path': img_path}
