@@ -104,4 +104,4 @@ Training runs are saved under `outputs/<name>/` (segmentation) and `outputs_cls/
 
 ## License
 
-This project is released under the MIT License — see [LICENSE](LICENSE).
+No standalone license file is currently included with this project.
