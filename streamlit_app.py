@@ -28,6 +28,16 @@ ARTIFACT_FILES = {
     "classification_config_url": CLS_CONFIG_PATH,
     "classification_model_url": CLS_MODEL_PATH,
 }
+PRIVATE_GITHUB_KEYS = [
+    "owner",
+    "repo",
+    "token",
+    "segmentation_config_path",
+    "segmentation_model_path",
+    "classification_config_path",
+    "classification_model_path",
+    "branch",
+]
 
 
 def load_yaml_file(path: Path) -> dict:
@@ -143,16 +153,7 @@ def get_private_github_config() -> Dict[str, str]:
     config: Dict[str, str] = {}
     if hasattr(st, "secrets") and "github_artifacts" in st.secrets:
         secret_cfg = st.secrets["github_artifacts"]
-        for key in [
-            "owner",
-            "repo",
-            "token",
-            "segmentation_config_path",
-            "segmentation_model_path",
-            "classification_config_path",
-            "classification_model_path",
-            "branch",
-        ]:
+        for key in PRIVATE_GITHUB_KEYS:
             value = secret_cfg.get(key, "")
             if value:
                 config[key] = str(value)
@@ -196,6 +197,20 @@ def maybe_download_from_private_github(dest_path: Path) -> bool:
     }
     download_url_to_path(api_url, dest_path, headers=headers)
     return True
+
+
+def has_complete_private_github_config() -> bool:
+    cfg = get_private_github_config()
+    required_keys = [
+        "owner",
+        "repo",
+        "token",
+        "segmentation_config_path",
+        "segmentation_model_path",
+        "classification_config_path",
+        "classification_model_path",
+    ]
+    return all(cfg.get(key, "").strip() for key in required_keys)
 
 
 def ensure_remote_artifacts() -> List[str]:
@@ -295,31 +310,38 @@ def render_setup_help():
     st.error("Model artifacts are missing, so the app cannot produce predictions yet.")
     st.markdown(
         """
-Create these files inside the repository before deployment:
+Recommended deployment setup for a public app:
 
-- `app_artifacts/segmentation/config.yml`
-- `app_artifacts/segmentation/model.pth`
-- `app_artifacts/classification/classifier_config.yml`
-- `app_artifacts/classification/best_classifier.pth`
+1. Keep these four files in a separate private GitHub repository:
+   - `segmentation/config.yml`
+   - `segmentation/model.pth`
+   - `classification/classifier_config.yml`
+   - `classification/best_classifier.pth`
+2. In Streamlit Community Cloud, open your app settings and add secrets based on `.streamlit/secrets.toml.example`
+3. The app will download the files into `app_artifacts/` at startup
 
 Optional:
 
 - `app_artifacts/classification/class_names.yml`
-- Streamlit secrets with artifact download URLs
+- public artifact URLs, if you intentionally want public downloads
 
 `class_names.yml` format:
 
 ```yaml
 class_names:
   - Normal
-  - Diabetic Retinopathy
+  - AMD
+  - DR
   - Glaucoma
-  - Cataract
 ```
 
-Do not commit large model files to Git unless you intentionally want them public. A better deployment pattern is to place the weights on a public file host and download them into these paths during app startup, or add them manually on the deployment machine.
+Do not commit model weights to this public repository. For local testing only, you can still place the files directly under `app_artifacts/`.
         """
     )
+    if has_complete_private_github_config():
+        st.info("Private GitHub artifact secrets were detected. If files are still missing, recheck the repo paths, token permissions, and branch name.")
+    elif get_private_github_config():
+        st.warning("A partial `github_artifacts` secret is present. Fill every required field from `.streamlit/secrets.toml.example`.")
 
 
 def main():
@@ -486,6 +508,7 @@ def main():
                 "classes": pipeline["class_names"],
                 "remote_urls_configured": sorted(list(get_artifact_urls().keys())),
                 "private_github_enabled": bool(get_private_github_config()),
+                "private_github_ready": has_complete_private_github_config(),
             }
         )
 

@@ -142,7 +142,9 @@ After the artifacts are in place, the app only needs a fundus image upload from 
 
 If the full `requirements.txt` fails on modern Windows/Python versions, use `requirements_streamlit.txt` for the demo app. It contains only the packages needed for inference and the Streamlit UI.
 
-For Streamlit Community Cloud deployment, keep checkpoint files out of Git and configure artifact download URLs through Streamlit secrets. Create a local `.streamlit/secrets.toml` from `.streamlit/secrets.toml.example` and set:
+For Streamlit Community Cloud deployment, keep checkpoint files out of this repository and configure artifact access through Streamlit secrets.
+
+If you intentionally want public artifact URLs, create a local `.streamlit/secrets.toml` from `.streamlit/secrets.toml.example` and set:
 
 ```toml
 [artifact_urls]
@@ -154,7 +156,18 @@ classification_model_url = "https://example.com/best_classifier.pth"
 
 The app will download missing artifacts into `app_artifacts/` at startup.
 
-For a public Streamlit app with private model files, store the artifacts in a private GitHub repository and add this to Streamlit secrets instead:
+Recommended setup for a public Streamlit app with private model files:
+
+1. Create a separate private GitHub repository just for the four deployed artifacts.
+2. Add only these files there:
+   - `segmentation/config.yml`
+   - `segmentation/model.pth`
+   - `classification/classifier_config.yml`
+   - `classification/best_classifier.pth`
+3. Create a fine-grained GitHub token with read-only access to that private repository.
+4. In Streamlit Community Cloud, open your app settings and paste the following into `Secrets`.
+
+Use this secret format:
 
 ```toml
 [github_artifacts]
@@ -169,6 +182,8 @@ classification_model_path = "classification/best_classifier.pth"
 ```
 
 The app will use the GitHub Contents API with authenticated raw downloads for those files.
+
+This lets the Streamlit app stay public while your model files remain private. The token is stored only in Streamlit secrets and is not committed to GitHub.
 
 ## License
 
