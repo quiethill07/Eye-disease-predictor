@@ -102,6 +102,58 @@ python pipeline_preflight.py --fives_root [FIVES_ROOT]
 
 Training runs are saved under `outputs/<name>/` (segmentation) and `outputs_cls/<name>/` (classifier), each containing the run config (`config.yml`), logs (`log.csv`), TensorBoard event files, and model checkpoints (best/last/periodic).
 
+## Streamlit Demo
+
+This repository includes a Streamlit app in `streamlit_app.py` for the full inference pipeline:
+
+- retinal vessel segmentation
+- segmentation-guided disease classification
+
+Run it locally with:
+
+```bash
+pip install -r requirements_streamlit.txt
+python -m streamlit run streamlit_app.py
+```
+
+Before starting the app, place the trained artifacts in these paths:
+
+- `app_artifacts/segmentation/config.yml`
+- `app_artifacts/segmentation/model.pth`
+- `app_artifacts/classification/classifier_config.yml`
+- `app_artifacts/classification/best_classifier.pth`
+
+Optional class labels file:
+
+- `app_artifacts/classification/class_names.yml`
+- `.streamlit/secrets.toml`
+
+Example:
+
+```yaml
+class_names:
+  - Normal
+  - Diabetic Retinopathy
+  - Glaucoma
+  - Cataract
+```
+
+After the artifacts are in place, the app only needs a fundus image upload from the end user.
+
+If the full `requirements.txt` fails on modern Windows/Python versions, use `requirements_streamlit.txt` for the demo app. It contains only the packages needed for inference and the Streamlit UI.
+
+For Streamlit Community Cloud deployment, keep checkpoint files out of Git and configure artifact download URLs through Streamlit secrets. Create a local `.streamlit/secrets.toml` from `.streamlit/secrets.toml.example` and set:
+
+```toml
+[artifact_urls]
+segmentation_config_url = "https://example.com/config.yml"
+segmentation_model_url = "https://example.com/model.pth"
+classification_config_url = "https://example.com/classifier_config.yml"
+classification_model_url = "https://example.com/best_classifier.pth"
+```
+
+The app will download missing artifacts into `app_artifacts/` at startup.
+
 ## License
 
 No standalone license file is currently included with this project.

@@ -4,6 +4,7 @@ pandas
 pyyaml
 albumentations
 tqdm
+streamlit
 tensorboardX
 scikit-learn
 matplotlib

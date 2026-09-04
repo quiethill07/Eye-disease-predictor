@@ -1,0 +1,12 @@
+streamlit
+torch
+torchvision
+numpy
+pandas
+pyyaml
+albumentations
+opencv-python
+matplotlib
+scikit-learn
+medpy
+timm>=0.9,<1.0
